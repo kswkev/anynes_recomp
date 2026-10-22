@@ -132,7 +132,10 @@ namespace AnyNes.Core
         }
     }
 
-    /// <summary>Sunsoft FME-7 / 5B, including the 5B's three square-wave channels.</summary>
+    /// <summary>
+    /// Sunsoft FME-7 / 5B. The 5B's audio is a YM2149: three square-wave channels, a shared noise
+    /// generator and a shared 32-step envelope, all clocked from CPU cycles / 16.
+    /// </summary>
     [Serializable]
     sealed class Fme7 : Mapper
     {
@@ -145,12 +148,16 @@ namespace AnyNes.Core
         readonly int[] toneCounter = new int[3];
         readonly bool[] toneOut = new bool[3];
         int audioDivider;
+        int noiseCounter, noiseLfsr = 1;
+        int envCounter, envLevel, envDir;
+        bool envHolding;
         static readonly float[] Volume = BuildVolume();
 
+        /// <summary>5-bit logarithmic DAC, 1.5 dB per step; fixed 4-bit volumes v use level 2v+1.</summary>
         static float[] BuildVolume()
         {
-            var t = new float[16];
-            for (int i = 1; i < 16; i++) t[i] = (float)(0.07 * Math.Pow(10, (i - 15) * 3.0 / 20.0));
+            var t = new float[32];
+            for (int i = 1; i < 32; i++) t[i] = (float)(0.07 * Math.Pow(10, (i - 31) * 1.5 / 20.0));
             return t;
         }
 
@@ -188,7 +195,10 @@ namespace AnyNes.Core
                 case 0x8000: command = v & 0x0F; break;
                 case 0xA000: Command(v); break;
                 case 0xC000: audioReg = v & 0x0F; break;
-                case 0xE000: toneRegs[audioReg] = v; break;
+                case 0xE000:
+                    toneRegs[audioReg] = v;
+                    if (audioReg == 13) RestartEnvelope();
+                    break;
             }
         }
 
@@ -246,17 +256,63 @@ namespace AnyNes.Core
                         toneOut[c] = !toneOut[c];
                     }
                 }
+
+                // Noise: 17-bit LFSR shifted at half the tone clock (CPU / 32 / period).
+                if (++noiseCounter >= 2 * Math.Max(1, toneRegs[6] & 0x1F))
+                {
+                    noiseCounter = 0;
+                    int bit = (noiseLfsr ^ (noiseLfsr >> 3)) & 1;
+                    noiseLfsr = (noiseLfsr >> 1) | (bit << 16);
+                }
+
+                // Envelope: one of 32 steps every period ticks (CPU / 16 / period).
+                if (++envCounter >= Math.Max(1, toneRegs[11] | (toneRegs[12] << 8)))
+                {
+                    envCounter = 0;
+                    StepEnvelope();
+                }
             }
+        }
+
+        void RestartEnvelope()
+        {
+            bool attack = (toneRegs[13] & 4) != 0;
+            envLevel = attack ? 0 : 31;
+            envDir = attack ? 1 : -1;
+            envHolding = false;
+            envCounter = 0;
+        }
+
+        void StepEnvelope()
+        {
+            if (envHolding) return;
+            envLevel += envDir;
+            if (envLevel >= 0 && envLevel <= 31) return;
+
+            // End of a ramp: the shape bits decide what happens next.
+            int shape = toneRegs[13];
+            bool cont = (shape & 8) != 0, alt = (shape & 2) != 0, hold = (shape & 1) != 0;
+            int end = envDir > 0 ? 31 : 0;
+            if (!cont) { envLevel = 0; envHolding = true; }                       // \___  /___
+            else if (hold) { envLevel = alt ? 31 - end : end; envHolding = true; } // \___  \¯¯¯  /¯¯¯  /___
+            else if (alt) { envDir = -envDir; envLevel = end; }                    // \/\/  /\/\
+            else envLevel = 31 - end;                                              // \\\\  ////
         }
 
         public override float AudioOutput()
         {
             float s = 0;
             int mixer = toneRegs[7];
+            bool noise = (noiseLfsr & 1) != 0;
             for (int c = 0; c < 3; c++)
             {
-                if ((mixer & (1 << c)) != 0) continue;   // tone disabled
-                if (toneOut[c]) s += Volume[toneRegs[8 + c] & 0x0F];
+                // A channel is high when every enabled source (tone, noise) is high; with both
+                // sources disabled it outputs its volume level constantly.
+                bool toneOn = (mixer & (1 << c)) == 0, noiseOn = (mixer & (8 << c)) == 0;
+                if ((toneOn && !toneOut[c]) || (noiseOn && !noise)) continue;
+                int vol = toneRegs[8 + c];
+                int level = (vol & 0x10) != 0 ? envLevel : ((vol & 0x0F) == 0 ? 0 : (vol & 0x0F) * 2 + 1);
+                s += Volume[level];
             }
             return s;
         }

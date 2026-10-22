@@ -43,4 +43,4 @@ games (Duck Hunt, Hogan's Alley, Wild Gunman, Gumshoe, ...) turn it on automatic
 (Operation Wolf, Bayou Billy, Laser Invasion, ...) tick "Port 2: Zapper" in the builder, or use
 Options > Zapper in the game window.
 
-Not emulated: PAL timing, MMC5 PCM read mode / IRQ, Sunsoft 5B noise and envelopes.
+Not emulated: PAL timing, MMC5 PCM read mode / IRQ.
