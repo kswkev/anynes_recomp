@@ -35,7 +35,8 @@ covering every board in a typical complete USA set.
 
 Player controls: arrows, Z = B, X = A, Right Shift = Select, Enter = Start (rebindable under
 Options > Controls; XInput pads work automatically). F5/F8 save/load state, 1-4 pick a slot,
-F11 or Alt+Enter fullscreen. Battery saves, states and settings live in `%LOCALAPPDATA%\AnyNES`.
+F11 or Alt+Enter fullscreen, F9 cycles the CRT scanline filter (View > Scanlines: off / light /
+medium / strong; needs 2x or larger). Battery saves, states and settings live in `%LOCALAPPDATA%\AnyNES`.
 
 Light-gun games: the Zapper sits in port 2 and is aimed with the mouse (a crosshair replaces the
 cursor over the picture). Left-click shoots, right-click shoots away from the screen. Known Zapper

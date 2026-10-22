@@ -32,6 +32,18 @@ namespace AnyNes.Player
         public long OverlayUntil;
         IntPtr cachedHandle;
 
+        // ---- Scanline filter: 0 = off, 1-3 = light/medium/strong darkening of the gap between lines.
+        public static readonly string[] ScanlineNames = { "Off", "Light", "Medium", "Strong" };
+        static readonly int[] ScanlineGap = { 256, 192, 128, 64 };     // brightness of gap rows, /256
+        int scanlineLevel;
+        int[] filtered = new int[0];
+
+        public int ScanlineLevel
+        {
+            get { return scanlineLevel; }
+            set { scanlineLevel = Math.Max(0, Math.Min(3, value)); Invalidate(); }
+        }
+
         // ---- Zapper: mouse aim (NES pixel coordinates, -1 when off the picture) and trigger state.
         bool zapperMode;
         public volatile int AimX = -1, AimY = -1;
@@ -162,6 +174,45 @@ namespace AnyNes.Player
             return new Rectangle((w - dw) / 2, (h - dh) / 2, dw, dh);
         }
 
+        /// <summary>
+        /// Expands the frame vertically to exactly <paramref name="height"/> rows (only the width is then
+        /// stretched by GDI). Each NES line becomes a band of rows whose bottom third, at least one row,
+        /// is darkened, which keeps the effect even at non-integer scales such as fullscreen.
+        /// </summary>
+        void BuildScanlines(int height)
+        {
+            if (filtered.Length != 256 * height) filtered = new int[256 * height];
+            int lines = VisibleLines;
+            uint k = (uint)ScanlineGap[scanlineLevel];
+            lock (Sync)
+            {
+                for (int line = 0; line < lines; line++)
+                {
+                    int start = line * height / lines, end = (line + 1) * height / lines;
+                    int band = end - start;
+                    int dark = Math.Max(1, (band + 1) / 3);
+                    int src = line * 256;
+                    for (int y = start; y < end; y++)
+                    {
+                        int dst = y * 256;
+                        if (y < end - dark)
+                        {
+                            Array.Copy(Pixels, src, filtered, dst, 256);
+                            continue;
+                        }
+                        for (int x = 0; x < 256; x++)
+                        {
+                            // Scale R and B together and G separately (no carries between channels).
+                            uint c = (uint)Pixels[src + x];
+                            filtered[dst + x] = unchecked((int)(0xFF000000
+                                | ((((c & 0xFF00FF) * k) >> 8) & 0xFF00FF)
+                                | ((((c & 0x00FF00) * k) >> 8) & 0x00FF00)));
+                        }
+                    }
+                }
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
@@ -186,8 +237,18 @@ namespace AnyNes.Player
                     biBitCount = 32
                 };
                 SetStretchBltMode(hdc, 3);      // COLORONCOLOR = nearest neighbour
-                lock (Sync)
-                    StretchDIBits(hdc, r.X, r.Y, r.Width, r.Height, 0, 0, 256, VisibleLines, Pixels, ref bmi, 0, 0x00CC0020);
+                // Scanlines need at least two screen rows per NES line to show anything.
+                if (scanlineLevel > 0 && r.Height >= VisibleLines * 2)
+                {
+                    BuildScanlines(r.Height);
+                    bmi.biHeight = -r.Height;
+                    StretchDIBits(hdc, r.X, r.Y, r.Width, r.Height, 0, 0, 256, r.Height, filtered, ref bmi, 0, 0x00CC0020);
+                }
+                else
+                {
+                    lock (Sync)
+                        StretchDIBits(hdc, r.X, r.Y, r.Width, r.Height, 0, 0, 256, VisibleLines, Pixels, ref bmi, 0, 0x00CC0020);
+                }
             }
             finally { g.ReleaseHdc(hdc); }
 
@@ -225,6 +286,8 @@ namespace AnyNes.Player
         ToolStripMenuItem pauseItem, muteItem, cropItem, bgPauseItem, zapperItem, ntscItem, palItem;
         bool regionOverridden;
         readonly ToolStripMenuItem[] scaleItems = new ToolStripMenuItem[6];
+        readonly ToolStripMenuItem[] scanlineItems = new ToolStripMenuItem[4];
+        int scanlines;
         readonly ToolStripMenuItem[] slotItems = new ToolStripMenuItem[4];
 
         public PlayerForm(RomImage rom, string title, bool zapperDefault)
@@ -249,6 +312,7 @@ namespace AnyNes.Player
             screen.Dock = DockStyle.Fill;
             screen.VisibleLines = cropOverscan ? 224 : 240;
             screen.ZapperMode = zapper;
+            screen.ScanlineLevel = scanlines;
             Controls.Add(screen);
             Controls.Add(menu);
             MainMenuStrip = menu;
@@ -305,6 +369,14 @@ namespace AnyNes.Player
                 screen.VisibleLines = cropOverscan ? 224 : 240;
                 ApplyScale();
             });
+            var scanlineMenu = new ToolStripMenuItem("&Scanlines");
+            for (int i = 0; i < 4; i++)
+            {
+                int level = i;
+                scanlineItems[i] = Item(ScreenControl.ScanlineNames[i], i == 0 ? "F9 cycles" : null, delegate { SetScanlines(level); });
+                scanlineMenu.DropDownItems.Add(scanlineItems[i]);
+            }
+            view.DropDownItems.Add(scanlineMenu);
             view.DropDownItems.Add(cropItem);
 
             var options = new ToolStripMenuItem("&Options");
@@ -346,6 +418,7 @@ namespace AnyNes.Player
             ntscItem.Checked = rom.Region == Core.Region.Ntsc;
             palItem.Checked = rom.Region == Core.Region.Pal;
             for (int i = 0; i < 6; i++) scaleItems[i].Checked = scale == i + 1;
+            for (int i = 0; i < 4; i++) scanlineItems[i].Checked = scanlines == i;
             for (int i = 0; i < 4; i++) slotItems[i].Checked = slot == i + 1;
         }
 
@@ -390,6 +463,17 @@ namespace AnyNes.Player
             ShowOverlay(r == Core.Region.Pal ? "PAL console (50 Hz) - power cycled" : "NTSC console (60 Hz) - power cycled");
         }
 
+        void SetScanlines(int level)
+        {
+            scanlines = level;
+            screen.ScanlineLevel = level;
+            UpdateChecks();
+            string msg = "Scanlines: " + ScreenControl.ScanlineNames[level];
+            // At 1x there is only one screen row per NES line, so the effect can't be drawn.
+            if (level > 0 && !fullscreen && scale < 2) msg += " (needs 2x or larger)";
+            ShowOverlay(msg);
+        }
+
         void SetZapper(bool on)
         {
             zapper = on;
@@ -418,7 +502,7 @@ namespace AnyNes.Player
             sb.AppendLine("right-click to shoot away from the screen.");
             sb.AppendLine();
             sb.AppendLine("F5 save state, F8 load state, 1-4 select slot");
-            sb.AppendLine("F11 / Alt+Enter fullscreen, Esc leaves fullscreen");
+            sb.AppendLine("F11 / Alt+Enter fullscreen, Esc leaves fullscreen, F9 cycles scanlines");
             sb.AppendLine("Pause/Break pauses, M mutes, Ctrl+R resets (unless those keys are bound to the game)");
             MessageBox.Show(this, sb.ToString(), title + " - Controls", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -457,6 +541,7 @@ namespace AnyNes.Player
                 case Keys.Control | Keys.R: DoReset(false); return true;
                 case Keys.Control | Keys.Shift | Keys.R: DoReset(true); return true;
                 case Keys.F1: ShowHelp(); return true;
+                case Keys.F9: SetScanlines((scanlines + 1) % 4); return true;
                 case Keys.D1: case Keys.D2: case Keys.D3: case Keys.D4:
                     SelectSlot(keyData - Keys.D0); return true;
             }
@@ -567,6 +652,7 @@ namespace AnyNes.Player
                     {
                         case "scale": if (int.TryParse(parts[1], out n) && n >= 1 && n <= 6) scale = n; break;
                         case "crop": cropOverscan = parts[1] == "1"; break;
+                        case "scanlines": if (int.TryParse(parts[1], out n) && n >= 0 && n <= 3) scanlines = n; break;
                         case "muted": muted = parts[1] == "1"; break;
                         case "bgpause": pauseInBackground = parts[1] == "1"; break;
                         case "zapper": zapper = parts[1] == "1"; break;
@@ -587,7 +673,8 @@ namespace AnyNes.Player
                 Directory.CreateDirectory(dataDir);
                 var lines = new System.Collections.Generic.List<string>
                 {
-                    "scale=" + scale, "crop=" + (cropOverscan ? 1 : 0), "muted=" + (muted ? 1 : 0), "bgpause=" + (pauseInBackground ? 1 : 0),
+                    "scale=" + scale, "crop=" + (cropOverscan ? 1 : 0), "scanlines=" + scanlines,
+                    "muted=" + (muted ? 1 : 0), "bgpause=" + (pauseInBackground ? 1 : 0),
                     "zapper=" + (zapper ? 1 : 0)
                 };
                 // Only remember the region if the player picked one; otherwise follow the exe's default.
