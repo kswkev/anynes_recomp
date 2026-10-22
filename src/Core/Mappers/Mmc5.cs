@@ -25,6 +25,9 @@ namespace AnyNes.Core
         readonly Apu.Pulse pulse1 = new Apu.Pulse(false, false), pulse2 = new Apu.Pulse(true, false);
         int pcm, audioFrame;
         bool audioOdd;
+        // $5010: bit 0 = PCM read mode (samples come from CPU reads of $8000-$BFFF), bit 7 = PCM IRQ
+        // enable. In read mode a $00 byte raises the PCM IRQ instead of updating the output.
+        bool pcmReadMode, pcmIrqEnabled, pcmIrqPending;
 
         readonly byte[][] cpuMem = new byte[5][];
         readonly int[] cpuOff = new int[5];
@@ -47,7 +50,12 @@ namespace AnyNes.Core
             {
                 case 0x5000: case 0x5002: case 0x5003: pulse1.Write(a & 3, v); break;
                 case 0x5004: case 0x5006: case 0x5007: pulse2.Write(a & 3, v); break;
-                case 0x5011: if (v != 0) pcm = v; break;    // PCM write mode; 0 is ignored
+                case 0x5010:
+                    pcmReadMode = (v & 1) != 0;
+                    pcmIrqEnabled = (v & 0x80) != 0;
+                    UpdateIrq();
+                    break;
+                case 0x5011: if (!pcmReadMode && v != 0) pcm = v; break;    // write mode; 0 is ignored
                 case 0x5015:
                     pulse1.Enabled = (v & 1) != 0; if (!pulse1.Enabled) pulse1.Length = 0;
                     pulse2.Enabled = (v & 2) != 0; if (!pulse2.Enabled) pulse2.Length = 0;
@@ -133,14 +141,20 @@ namespace AnyNes.Core
             }
         }
 
-        void UpdateIrq() { Irq = irqPending && irqEnabled; }
+        void UpdateIrq() { Irq = (irqPending && irqEnabled) || (pcmIrqPending && pcmIrqEnabled); }
 
         public override byte ReadCpu(int a)
         {
             if (a >= 0x6000)
             {
                 int s = (a - 0x6000) >> 13;
-                return cpuMem[s][cpuOff[s] + (a & 0x1FFF)];
+                byte v = cpuMem[s][cpuOff[s] + (a & 0x1FFF)];
+                if (pcmReadMode && a >= 0x8000 && a < 0xC000)
+                {
+                    if (v != 0) pcm = v;
+                    else { pcmIrqPending = true; UpdateIrq(); }
+                }
+                return v;
             }
             if (a >= 0x5C00)
             {
@@ -153,6 +167,14 @@ namespace AnyNes.Core
                     {
                         int r = (irqPending ? 0x80 : 0) | (inFrame ? 0x40 : 0);
                         irqPending = false;
+                        UpdateIrq();
+                        return (byte)r;
+                    }
+                case 0x5010:
+                    {
+                        // Bit 7 reports (and acknowledges) the PCM IRQ.
+                        int r = pcmIrqPending && pcmIrqEnabled ? 0x80 : 0;
+                        pcmIrqPending = false;
                         UpdateIrq();
                         return (byte)r;
                     }
