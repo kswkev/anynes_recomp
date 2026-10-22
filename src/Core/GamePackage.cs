@@ -18,8 +18,10 @@ namespace AnyNes.Core
         public byte[] Rom;
         /// <summary>Plug a Zapper (mouse-aimed) into port 2 by default.</summary>
         public bool Zapper;
+        /// <summary>Console timing; null (packages from older builders) means auto-detect.</summary>
+        public Region? Region;
 
-        const byte FlagZapper = 1;
+        const byte FlagZapper = 1, FlagPal = 2, FlagRegionSet = 4;
 
         public byte[] Serialize()
         {
@@ -31,7 +33,9 @@ namespace AnyNes.Core
                 w.Write(RomName ?? "");
                 w.Write(Rom.Length);
                 w.Write(Rom);
-                w.Write((byte)(Zapper ? FlagZapper : 0));
+                int flags = Zapper ? FlagZapper : 0;
+                if (Region.HasValue) flags |= FlagRegionSet | (Region.Value == Core.Region.Pal ? FlagPal : 0);
+                w.Write((byte)flags);
                 w.Flush();
                 return ms.ToArray();
             }
@@ -49,7 +53,12 @@ namespace AnyNes.Core
                 p.Title = r.ReadString();
                 p.RomName = r.ReadString();
                 p.Rom = r.ReadBytes(r.ReadInt32());
-                if (ms.Position < ms.Length) p.Zapper = (r.ReadByte() & FlagZapper) != 0;
+                if (ms.Position < ms.Length)
+                {
+                    int flags = r.ReadByte();
+                    p.Zapper = (flags & FlagZapper) != 0;
+                    if ((flags & FlagRegionSet) != 0) p.Region = (flags & FlagPal) != 0 ? Core.Region.Pal : Core.Region.Ntsc;
+                }
                 return p;
             }
         }

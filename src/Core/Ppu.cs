@@ -33,7 +33,16 @@ namespace AnyNes.Core
 
         static readonly byte[] Reverse = BuildReverse();
 
-        public Ppu(Nes nes) { this.nes = nes; }
+        /// <summary>Last line of the frame: 261 on NTSC (262 lines), 311 on PAL (312 lines).</summary>
+        public readonly int PreRenderLine;
+        readonly bool isPal;
+
+        public Ppu(Nes nes)
+        {
+            this.nes = nes;
+            isPal = nes.Region == Region.Pal;
+            PreRenderLine = isPal ? 311 : 261;
+        }
 
         public bool NmiLine { get { return (ctrl & 0x80) != 0 && (status & 0x80) != 0; } }
         public bool RenderingEnabled { get { return (mask & 0x18) != 0; } }
@@ -182,9 +191,9 @@ namespace AnyNes.Core
             bool rendering = (mask & 0x18) != 0;
             int d = Dot;
 
-            if (Scanline < 240 || Scanline == 261)
+            if (Scanline < 240 || Scanline == PreRenderLine)
             {
-                if (Scanline == 261 && d == 1) status &= 0x1F;   // clear vblank, sprite 0, overflow
+                if (Scanline == PreRenderLine && d == 1) status &= 0x1F;   // clear vblank, sprite 0, overflow
                 if (rendering) RenderCycle(d);
                 else if (d == 257) spCount = 0;
                 if (Scanline < 240 && d >= 1 && d <= 256) DrawPixel(d - 1, rendering);
@@ -200,12 +209,13 @@ namespace AnyNes.Core
 
             Clock++;
             Dot++;
-            if (Scanline == 261 && Dot == 340 && odd && rendering) Dot = 341;
+            // NTSC skips the last pre-render dot on odd frames when rendering; PAL never does.
+            if (!isPal && Scanline == PreRenderLine && Dot == 340 && odd && rendering) Dot = 341;
             if (Dot > 340)
             {
                 Dot = 0;
                 Scanline++;
-                if (Scanline > 261)
+                if (Scanline > PreRenderLine)
                 {
                     Scanline = 0;
                     odd = !odd;
@@ -267,7 +277,7 @@ namespace AnyNes.Core
                 Read(0x2000 | (v & 0x0FFF));
             }
 
-            if (Scanline == 261 && d >= 280 && d <= 304)
+            if (Scanline == PreRenderLine && d >= 280 && d <= 304)
                 v = (v & ~0x7BE0) | (t & 0x7BE0);
 
             if (d >= 257 && d <= 320) SpriteFetch(d);
@@ -407,7 +417,10 @@ namespace AnyNes.Core
                 color = pal[PalIndex(idx)];
             }
             if ((mask & 0x01) != 0) color &= 0x30;
-            Frame[Scanline * Width + x] = Palette.Rgb[(color & 0x3F) | ((mask & 0xE0) << 1)];
+            int emphasis = (mask >> 5) & 7;
+            // The PAL PPU swaps the red and green emphasis bits.
+            if (isPal) emphasis = (emphasis & 4) | ((emphasis & 1) << 1) | ((emphasis >> 1) & 1);
+            Frame[Scanline * Width + x] = Palette.Rgb[(color & 0x3F) | (emphasis << 6)];
         }
     }
 }

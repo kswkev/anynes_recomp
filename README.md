@@ -43,4 +43,7 @@ games (Duck Hunt, Hogan's Alley, Wild Gunman, Gumshoe, ...) turn it on automatic
 (Operation Wolf, Bayou Billy, Laser Invasion, ...) tick "Port 2: Zapper" in the builder, or use
 Options > Zapper in the game window.
 
-Not emulated: PAL timing.
+NTSC and PAL consoles are both emulated (PAL: 50 Hz, 312 lines, 3.2 PPU dots per CPU cycle, PAL APU
+tables, swapped red/green emphasis). The region comes from an NES 2.0 header, else from the file
+name: "(Europe)", "(Australia)" or a European country means PAL; "(USA, Europe)" and "(World)" stay
+NTSC. It can be changed in the builder or under Options > Console region in the game window.

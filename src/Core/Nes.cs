@@ -19,7 +19,9 @@ namespace AnyNes.Core
         public readonly Apu Apu;
         public readonly Mapper Mapper;
         public readonly RomImage Rom;
+        public readonly Region Region;
         public readonly byte[] Ram = new byte[0x800];
+        int palPhase;               // PAL: 16 PPU dots per 5 CPU cycles (3,3,3,3,4)
         public int OpenBus;
 
         /// <summary>Live controller state for ports 1 and 2, set by the frontend.</summary>
@@ -33,6 +35,7 @@ namespace AnyNes.Core
         public Nes(RomImage rom)
         {
             Rom = rom;
+            Region = rom.Region;
             Mapper = MapperFactory.Create(rom);
             Cpu = new Cpu(this);
             Ppu = new Ppu(this);
@@ -52,6 +55,14 @@ namespace AnyNes.Core
 
         public bool IrqLine { get { return Mapper.Irq || Apu.FrameIrq || Apu.DmcIrq; } }
 
+        public bool IsPal { get { return Region == Region.Pal; } }
+
+        /// <summary>CPU clock in Hz: 1.789773 MHz (NTSC) or 1.662607 MHz (PAL).</summary>
+        public double CpuClockHz { get { return IsPal ? 1662607.0 : 1789773.0; } }
+
+        /// <summary>Frames per second: 60.0988 (NTSC) or 50.0070 (PAL).</summary>
+        public double FrameRate { get { return IsPal ? 50.0070 : 60.0988; } }
+
         public void RunFrame()
         {
             Ppu.FrameReady = false;
@@ -65,6 +76,11 @@ namespace AnyNes.Core
             Ppu.Step();
             Ppu.Step();
             Ppu.Step();
+            if (Region == Region.Pal && ++palPhase == 5)
+            {
+                palPhase = 0;
+                Ppu.Step();
+            }
             Apu.Clock();
             if (Mapper.NeedsCpuClock) Mapper.CpuClock();
         }

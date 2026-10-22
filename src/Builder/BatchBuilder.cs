@@ -31,11 +31,12 @@ namespace AnyNes.Builder
             if (!MapperFactory.IsSupported(rom.Mapper))
                 throw new NotSupportedException(MapperFactory.Name(rom.Mapper) + " is not supported");
             if (string.IsNullOrEmpty(title)) title = RomLoader.CleanTitle(inner);
+            rom.Region = RomLoader.DetectRegion(rom, inner);
 
             var shots = Snapshots.Capture(rom, iconSeconds, cancelled);
             try
             {
-                var pkg = new GamePackage { Title = title, RomName = inner, Rom = bytes, Zapper = Zapper.IsZapperGame(rom.Crc32) };
+                var pkg = new GamePackage { Title = title, RomName = inner, Rom = bytes, Zapper = Zapper.IsZapperGame(rom.Crc32), Region = rom.Region };
                 ExeWriter.Build(pkg, shots.Frames.Count > 0 ? shots.Frames[shots.Best] : null, outPath);
             }
             finally

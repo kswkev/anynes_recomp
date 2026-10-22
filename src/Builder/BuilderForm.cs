@@ -26,6 +26,8 @@ namespace AnyNes.Builder
         readonly Label mapperVal = new Label(), prgVal = new Label(), chrVal = new Label(), mirrorVal = new Label(),
             batteryVal = new Label(), crcVal = new Label(), supportVal = new Label();
         readonly CheckBox zapperBox = new CheckBox { Text = "Zapper light gun, aimed with the mouse", AutoSize = true };
+        readonly ComboBox regionBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
+        bool settingRegion;
         readonly Button buildBtn = new Button { Text = "Build EXE", Height = 34, Width = 130 };
         readonly Button testBtn = new Button { Text = "Test play", Height = 34, Width = 100 };
         readonly Button batchBtn = new Button { Text = "Convert a folder...", Height = 34, Width = 150 };
@@ -101,6 +103,9 @@ namespace AnyNes.Builder
             AddInfo(info, r++, "Mirroring", mirrorVal);
             AddInfo(info, r++, "Battery save", batteryVal);
             AddInfo(info, r++, "Port 2", zapperBox);
+            regionBox.Items.AddRange(new object[] { "NTSC  (60 Hz: USA, Japan)", "PAL  (50 Hz: Europe, Australia)" });
+            regionBox.SelectedIndexChanged += delegate { OnRegionPicked(); };
+            AddInfo(info, r++, "Region", regionBox);
             AddInfo(info, r++, "CRC32", crcVal);
             var icons = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
             icon48.Margin = icon32.Margin = new Padding(0, 0, 10, 0);
@@ -287,34 +292,50 @@ namespace AnyNes.Builder
             batteryVal.Text = rom.Battery ? "Yes (saved to %LOCALAPPDATA%\\AnyNES)" : "No";
             crcVal.Text = rom.Crc32.ToString("X8");
             zapperBox.Checked = Zapper.IsZapperGame(rom.Crc32);
+            rom.Region = RomLoader.DetectRegion(rom, romInner);
+            settingRegion = true;
+            regionBox.SelectedIndex = rom.Region == Core.Region.Pal ? 1 : 0;
+            settingRegion = false;
 
-            SetShots(null);
-            if (supported)
-            {
-                SetStatus("Capturing a title-screen icon...", false);
-                var cts = new CancellationTokenSource();
-                captureCts = cts;
-                var romCopy = rom;
-                ThreadPool.QueueUserWorkItem(delegate
-                {
-                    Snapshots.Result res = null;
-                    string err = null;
-                    try { res = Snapshots.Capture(romCopy, 20, () => cts.IsCancellationRequested); }
-                    catch (Exception ex) { err = ex.Message; }
-                    if (cts.IsCancellationRequested || IsDisposed) return;
-                    BeginInvoke((Action)delegate
-                    {
-                        if (cts != captureCts) return;
-                        SetShots(res);
-                        SetStatus(err != null ? "The game crashed during preview: " + err : "Ready to build.", err != null);
-                    });
-                });
-            }
+            if (supported) StartCapture();
             else
             {
+                SetShots(null);
                 SetStatus("This ROM uses " + MapperFactory.Name(rom.Mapper) + " hardware, which AnyNES does not emulate yet.", true);
             }
             UpdateUi();
+        }
+
+        void OnRegionPicked()
+        {
+            if (settingRegion || rom == null) return;
+            rom.Region = regionBox.SelectedIndex == 1 ? Core.Region.Pal : Core.Region.Ntsc;
+            if (MapperFactory.IsSupported(rom.Mapper)) StartCapture();
+        }
+
+        /// <summary>Runs the game headless in the background to collect icon candidate frames.</summary>
+        void StartCapture()
+        {
+            if (captureCts != null) captureCts.Cancel();
+            SetShots(null);
+            SetStatus("Capturing a title-screen icon...", false);
+            var cts = new CancellationTokenSource();
+            captureCts = cts;
+            var romCopy = rom;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Snapshots.Result res = null;
+                string err = null;
+                try { res = Snapshots.Capture(romCopy, 20, () => cts.IsCancellationRequested); }
+                catch (Exception ex) { err = ex.Message; }
+                if (cts.IsCancellationRequested || IsDisposed) return;
+                BeginInvoke((Action)delegate
+                {
+                    if (cts != captureCts) return;
+                    SetShots(res);
+                    SetStatus(err != null ? "The game crashed during preview: " + err : "Ready to build.", err != null);
+                });
+            });
         }
 
         void SetShots(Snapshots.Result res)
@@ -363,7 +384,7 @@ namespace AnyNes.Builder
             bool ok = rom != null && MapperFactory.IsSupported(rom.Mapper);
             buildBtn.Enabled = ok;
             testBtn.Enabled = ok;
-            titleBox.Enabled = outBox.Enabled = zapperBox.Enabled = rom != null;
+            titleBox.Enabled = outBox.Enabled = zapperBox.Enabled = regionBox.Enabled = rom != null;
         }
 
         void SetStatus(string text, bool error)
@@ -384,7 +405,7 @@ namespace AnyNes.Builder
 
             string title = titleBox.Text.Trim();
             if (title.Length == 0) title = RomLoader.CleanTitle(romInner);
-            var pkg = new GamePackage { Title = title, RomName = romInner, Rom = romBytes, Zapper = zapperBox.Checked };
+            var pkg = new GamePackage { Title = title, RomName = romInner, Rom = romBytes, Zapper = zapperBox.Checked, Region = rom.Region };
             try
             {
                 Cursor = Cursors.WaitCursor;
@@ -409,7 +430,8 @@ namespace AnyNes.Builder
                 Directory.CreateDirectory(dir);
                 string stub = Path.Combine(dir, "AnyNesPlayer.exe");
                 File.WriteAllBytes(stub, ExeWriter.PlayerStub());
-                string args = "\"" + romPath + "\" " + (zapperBox.Checked ? "--zapper" : "--no-zapper");
+                string args = "\"" + romPath + "\" " + (zapperBox.Checked ? "--zapper" : "--no-zapper")
+                    + (rom.Region == Core.Region.Pal ? " --pal" : " --ntsc");
                 Process.Start(new ProcessStartInfo(stub, args) { UseShellExecute = false });
             }
             catch (Exception ex)

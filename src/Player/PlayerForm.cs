@@ -222,7 +222,8 @@ namespace AnyNes.Player
         int slot = 1;
         bool cropOverscan = true;
         FormWindowState prevState;
-        ToolStripMenuItem pauseItem, muteItem, cropItem, bgPauseItem, zapperItem;
+        ToolStripMenuItem pauseItem, muteItem, cropItem, bgPauseItem, zapperItem, ntscItem, palItem;
+        bool regionOverridden;
         readonly ToolStripMenuItem[] scaleItems = new ToolStripMenuItem[6];
         readonly ToolStripMenuItem[] slotItems = new ToolStripMenuItem[4];
 
@@ -310,6 +311,12 @@ namespace AnyNes.Player
             options.DropDownItems.Add(Item("&Controls...", null, delegate { ConfigureKeys(); }));
             zapperItem = Item("&Zapper light gun (mouse, port 2)", null, delegate { SetZapper(!zapper); });
             options.DropDownItems.Add(zapperItem);
+            var regionMenu = new ToolStripMenuItem("Console &region");
+            ntscItem = Item("&NTSC (60 Hz: USA, Japan)", null, delegate { SetRegion(Core.Region.Ntsc); });
+            palItem = Item("&PAL (50 Hz: Europe, Australia)", null, delegate { SetRegion(Core.Region.Pal); });
+            regionMenu.DropDownItems.Add(ntscItem);
+            regionMenu.DropDownItems.Add(palItem);
+            options.DropDownItems.Add(regionMenu);
             muteItem = Item("&Mute", "M", delegate { muted = !muted; UpdateChecks(); });
             options.DropDownItems.Add(muteItem);
             bgPauseItem = Item("Pause when in &background", null, delegate { pauseInBackground = !pauseInBackground; UpdateChecks(); });
@@ -336,6 +343,8 @@ namespace AnyNes.Player
             cropItem.Checked = cropOverscan;
             bgPauseItem.Checked = pauseInBackground;
             zapperItem.Checked = zapper;
+            ntscItem.Checked = rom.Region == Core.Region.Ntsc;
+            palItem.Checked = rom.Region == Core.Region.Pal;
             for (int i = 0; i < 6; i++) scaleItems[i].Checked = scale == i + 1;
             for (int i = 0; i < 4; i++) slotItems[i].Checked = slot == i + 1;
         }
@@ -368,6 +377,17 @@ namespace AnyNes.Player
                 menu.Visible = true;
                 ApplyScale();
             }
+        }
+
+        /// <summary>Switching console timing needs a power cycle (the whole machine is rebuilt).</summary>
+        void SetRegion(Core.Region r)
+        {
+            if (rom.Region == r) return;
+            rom.Region = r;
+            regionOverridden = true;
+            DoReset(true);
+            UpdateChecks();
+            ShowOverlay(r == Core.Region.Pal ? "PAL console (50 Hz) - power cycled" : "NTSC console (60 Hz) - power cycled");
         }
 
         void SetZapper(bool on)
@@ -497,6 +517,8 @@ namespace AnyNes.Player
                 if (!File.Exists(StatePath)) { ShowOverlay("Slot " + slot + " is empty"); return; }
                 var loaded = Nes.LoadState(File.ReadAllBytes(StatePath));
                 lock (nesLock) nes = loaded;
+                rom.Region = loaded.Region;     // a state carries its console's timing
+                UpdateChecks();
                 ShowOverlay("Loaded state " + slot);
             }
             catch (Exception ex) { ShowOverlay("Load failed: " + ex.Message); }
@@ -548,6 +570,10 @@ namespace AnyNes.Player
                         case "muted": muted = parts[1] == "1"; break;
                         case "bgpause": pauseInBackground = parts[1] == "1"; break;
                         case "zapper": zapper = parts[1] == "1"; break;
+                        case "region":
+                            rom.Region = parts[1] == "pal" ? Core.Region.Pal : Core.Region.Ntsc;
+                            regionOverridden = true;
+                            break;
                     }
                 }
             }
@@ -559,11 +585,14 @@ namespace AnyNes.Player
             try
             {
                 Directory.CreateDirectory(dataDir);
-                File.WriteAllLines(SettingsPath, new[]
+                var lines = new System.Collections.Generic.List<string>
                 {
                     "scale=" + scale, "crop=" + (cropOverscan ? 1 : 0), "muted=" + (muted ? 1 : 0), "bgpause=" + (pauseInBackground ? 1 : 0),
                     "zapper=" + (zapper ? 1 : 0)
-                });
+                };
+                // Only remember the region if the player picked one; otherwise follow the exe's default.
+                if (regionOverridden) lines.Add("region=" + (rom.Region == Core.Region.Pal ? "pal" : "ntsc"));
+                File.WriteAllLines(SettingsPath, lines);
             }
             catch (Exception) { }
         }
@@ -594,10 +623,9 @@ namespace AnyNes.Player
             catch (Exception) { audio = null; }
 
             var samples = new short[4096];
-            var silence = new short[735];
+            var silence = new short[samples.Length];
             var clock = Stopwatch.StartNew();
             double nextFrame = 0;
-            const double frameMs = 1000.0 / 60.0988;
             int batteryTimer = 0;
             // A click is held for at least a few frames so games polling once per frame never miss it.
             int seenLeft = screen.LeftClicks, seenRight = screen.RightClicks, leftHold = 0, rightHold = 0;
@@ -615,8 +643,10 @@ namespace AnyNes.Player
                     }
 
                     int count;
+                    double frameMs;
                     lock (nesLock)
                     {
+                        frameMs = 1000.0 / nes.FrameRate;
                         nes.Input[0] = InputPoller.Poll(0, keys, hasFocus);
                         nes.Input[1] = InputPoller.Poll(1, keys, hasFocus);
 
@@ -644,7 +674,7 @@ namespace AnyNes.Player
 
                     if (audio != null)
                     {
-                        audio.Write(muted ? silence : samples, muted ? Math.Min(count, silence.Length) : count);
+                        audio.Write(muted ? silence : samples, count);
                     }
                     else
                     {

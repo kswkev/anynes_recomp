@@ -53,7 +53,7 @@ namespace AnyNes.Core
         {
             if (X < 0 || Y < 0 || X >= Ppu.Width || Y >= Ppu.Height) return false;
             int line = ppu.Scanline, dot = ppu.Dot;
-            if (line == 261) return false;      // pre-render: nothing drawn yet this frame
+            if (line == ppu.PreRenderLine) return false;      // pre-render: nothing drawn yet this frame
             int[] frame = ppu.Frame;
             for (int y = Math.Max(0, Y - Radius); y <= Math.Min(Ppu.Height - 1, Y + Radius); y++)
             {

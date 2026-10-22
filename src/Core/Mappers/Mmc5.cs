@@ -65,7 +65,8 @@ namespace AnyNes.Core
 
         public override void CpuClock()
         {
-            if (++audioFrame >= 7457)
+            // 240 Hz from the CPU clock: 1789773 / 240 (NTSC) or 1662607 / 240 (PAL).
+            if (++audioFrame >= (nes.IsPal ? 6927 : 7457))
             {
                 audioFrame = 0;
                 pulse1.Env.Clock(); pulse2.Env.Clock();

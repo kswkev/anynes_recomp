@@ -7,6 +7,9 @@ namespace AnyNes.Core
 {
     public enum Mirroring { Horizontal, Vertical, SingleLow, SingleHigh, FourScreen }
 
+    /// <summary>Console timing: NTSC (2A03/2C02, 60 Hz) or PAL (2A07/2C07, 50 Hz).</summary>
+    public enum Region { Ntsc, Pal }
+
     [Serializable]
     public sealed class RomImage
     {
@@ -21,6 +24,10 @@ namespace AnyNes.Core
         public int ChrRamSize;
         public uint Crc32;          // CRC of PRG+CHR (header independent)
         public bool IsNes2;
+        /// <summary>True when the header itself declares PAL timing.</summary>
+        public bool HeaderSaysPal;
+        /// <summary>Timing the console is built with; set before constructing <see cref="Nes"/>.</summary>
+        public Region Region;
 
         public static RomImage Parse(byte[] data)
         {
@@ -85,6 +92,11 @@ namespace AnyNes.Core
             {
                 r.PrgRamSize = (data[8] == 0 ? 1 : data[8]) * 0x2000;
             }
+
+            // NES 2.0: byte 12 bits 0-1 (1 = PAL). iNES 1.0: byte 9 bit 0, trusted only in clean headers.
+            if (r.IsNes2) r.HeaderSaysPal = (data[12] & 3) == 1;
+            else r.HeaderSaysPal = (data[9] & 1) != 0 && data[11] == 0 && data[12] == 0 && data[13] == 0 && data[14] == 0 && data[15] == 0;
+            r.Region = r.HeaderSaysPal ? Region.Pal : Region.Ntsc;
             if (r.Chr.Length == 0 && r.ChrRamSize == 0) r.ChrRamSize = 0x2000;
 
             uint crc = Crc.Compute(r.Prg, 0, r.Prg.Length, 0);
@@ -157,6 +169,38 @@ namespace AnyNes.Core
                 }
             }
             return bytes;
+        }
+
+        static readonly string[] PalTags =
+        {
+            "europe", "australia", "pal", "e", "germany", "france", "spain", "italy", "netherlands",
+            "sweden", "scandinavia", "uk", "united kingdom", "a", "g", "f", "s", "i"
+        };
+        static readonly string[] NtscTags = { "usa", "u", "japan", "j", "world", "canada", "brazil", "korea", "asia", "jue", "ju", "ue" };
+
+        /// <summary>
+        /// Best region for a ROM: a PAL header wins; otherwise No-Intro/GoodNES region tags in the file
+        /// name. Multi-region dumps such as "(USA, Europe)" or "(World)" are NTSC releases.
+        /// </summary>
+        public static Region DetectRegion(RomImage rom, string romName)
+        {
+            if (rom.HeaderSaysPal) return Region.Pal;
+            bool pal = false, ntsc = false;
+            string lower = (romName ?? "").ToLowerInvariant();
+            int i = 0;
+            while ((i = lower.IndexOfAny(new[] { '(', '[' }, i)) >= 0)
+            {
+                int end = lower.IndexOfAny(new[] { ')', ']' }, i);
+                if (end < 0) break;
+                foreach (var raw in lower.Substring(i + 1, end - i - 1).Split(','))
+                {
+                    string tag = raw.Trim();
+                    if (Array.IndexOf(NtscTags, tag) >= 0) ntsc = true;
+                    else if (Array.IndexOf(PalTags, tag) >= 0) pal = true;
+                }
+                i = end;
+            }
+            return pal && !ntsc ? Region.Pal : Region.Ntsc;
         }
 
         /// <summary>Turns "Super Mario Bros. (World) (Rev A)" into "Super Mario Bros.".</summary>

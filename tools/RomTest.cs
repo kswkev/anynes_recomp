@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using AnyNes.Core;
+using Region = AnyNes.Core.Region;
 
 // Headless regression runner: RomTest <rom dir|file> <out dir> [frames] [filter]
 // Runs each ROM with a scripted Start-button press pattern, saves a screenshot and a contact sheet.
@@ -38,12 +39,17 @@ static class RomTest
             int mapper = -1;
             long ms = 0;
             bool jammed = false;
+            Region region = Region.Ntsc;
             Bitmap shot = null;
             try
             {
                 string inner;
                 var rom = RomImage.Parse(RomLoader.Load(f, out inner));
+                rom.Region = RomLoader.DetectRegion(rom, inner);
+                if (Environment.GetEnvironmentVariable("ROMTEST_REGION") == "ntsc") rom.Region = Region.Ntsc;
+                if (Environment.GetEnvironmentVariable("ROMTEST_REGION") == "pal") rom.Region = Region.Pal;
                 mapper = rom.Mapper;
+                region = rom.Region;
                 var nes = new Nes(rom);
                 var sw = Stopwatch.StartNew();
                 for (int i = 0; i < frames; i++)
@@ -64,7 +70,8 @@ static class RomTest
                 fail++;
             }
             double fps = ms > 0 ? frames * 1000.0 / ms : 0;
-            Console.WriteLine("{0,-60} m{1,-4} {2} {3:F0}fps{4}", name.Length > 60 ? name.Substring(0, 60) : name, mapper, status, fps, jammed ? " JAM" : "");
+            Console.WriteLine("{0,-60} m{1,-4} {2} {3:F0}fps{4}{5}", name.Length > 60 ? name.Substring(0, 60) : name, mapper, status, fps,
+                jammed ? " JAM" : "", region == Region.Pal ? " PAL" : "");
             log.WriteLine("\"{0}\",{1},\"{2}\",{3},{4:F0},{5}", name, mapper, status, ms, fps, jammed);
             log.Flush();
             if (shot != null) shots.Add(new KeyValuePair<string, Bitmap>(name, shot));

@@ -6,7 +6,6 @@ namespace AnyNes.Core
     public sealed class Apu
     {
         public const int SampleRate = 44100;
-        const double CpuClock = 1789773.0;
 
         static readonly byte[] LengthTable =
         {
@@ -25,8 +24,15 @@ namespace AnyNes.Core
             15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
         };
-        static readonly int[] NoisePeriods = { 4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068 };
-        static readonly int[] DmcRates = { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 };
+        static readonly int[] NoisePeriodsNtsc = { 4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068 };
+        static readonly int[] NoisePeriodsPal = { 4, 8, 14, 30, 60, 88, 118, 148, 188, 236, 354, 472, 708, 944, 1890, 3778 };
+        static readonly int[] DmcRatesNtsc = { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 };
+        static readonly int[] DmcRatesPal = { 398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50 };
+
+        // Frame sequencer step points in CPU cycles: quarter 1, half 1, quarter 2, IRQ/half 2 (three
+        // cycles around the 4-step end), and the 5-step mode's last step + wrap.
+        static readonly int[] FrameStepsNtsc = { 7457, 14913, 22371, 29828, 29829, 29830, 37281, 37282 };
+        static readonly int[] FrameStepsPal = { 8313, 16627, 24939, 33252, 33253, 33254, 41565, 41566 };
         internal static readonly float[] PulseMix = BuildPulseMix();
         static readonly float[] TndMix = BuildTndMix();
 
@@ -236,16 +242,26 @@ namespace AnyNes.Core
         public bool FrameIrq;
         bool evenCycle;
 
+        readonly int[] noisePeriods, dmcRates, frameSteps;
+
         // resampling / filtering
         double sampleClock;
-        readonly double cyclesPerSample = CpuClock / SampleRate;
+        readonly double cyclesPerSample;
         float accum;
         int accumCount;
         float hp1Prev, hp1Out, hp2Prev, hp2Out, lpOut;
         readonly short[] samples = new short[4096];
         int sampleCount;
 
-        public Apu(Nes nes) { this.nes = nes; }
+        public Apu(Nes nes)
+        {
+            this.nes = nes;
+            bool pal = nes.Region == Region.Pal;
+            noisePeriods = pal ? NoisePeriodsPal : NoisePeriodsNtsc;
+            dmcRates = pal ? DmcRatesPal : DmcRatesNtsc;
+            frameSteps = pal ? FrameStepsPal : FrameStepsNtsc;
+            cyclesPerSample = nes.CpuClockHz / SampleRate;
+        }
 
         public bool DmcIrq { get { return dmc.Irq; } }
         public bool DmcNeedsFetch { get { return dmc.BufferEmpty && dmc.Remaining > 0; } }
@@ -288,7 +304,7 @@ namespace AnyNes.Core
                     noise.Env.Constant = (v & 0x10) != 0;
                     noise.Env.Volume = v & 15;
                     break;
-                case 0x400E: noise.Mode = (v & 0x80) != 0; noise.Period = NoisePeriods[v & 15]; break;
+                case 0x400E: noise.Mode = (v & 0x80) != 0; noise.Period = noisePeriods[v & 15]; break;
                 case 0x400F:
                     if (noise.Enabled) noise.Length = LengthTable[v >> 3];
                     noise.Env.Start = true;
@@ -296,7 +312,7 @@ namespace AnyNes.Core
                 case 0x4010:
                     dmc.IrqEnabled = (v & 0x80) != 0;
                     dmc.Loop = (v & 0x40) != 0;
-                    dmc.Rate = DmcRates[v & 15];
+                    dmc.Rate = dmcRates[v & 15];
                     if (!dmc.IrqEnabled) dmc.Irq = false;
                     break;
                 case 0x4011: dmc.Output = v & 0x7F; break;
@@ -357,28 +373,19 @@ namespace AnyNes.Core
             }
 
             fcCycle++;
-            if (!fcFiveStep)
+            int[] fs = frameSteps;
+            if (fcCycle == fs[0] || fcCycle == fs[2]) QuarterFrame();
+            else if (fcCycle == fs[1]) { QuarterFrame(); HalfFrame(); }
+            else if (!fcFiveStep)
             {
-                switch (fcCycle)
-                {
-                    case 7457: QuarterFrame(); break;
-                    case 14913: QuarterFrame(); HalfFrame(); break;
-                    case 22371: QuarterFrame(); break;
-                    case 29828: if (!irqInhibit) FrameIrq = true; break;
-                    case 29829: QuarterFrame(); HalfFrame(); if (!irqInhibit) FrameIrq = true; break;
-                    case 29830: if (!irqInhibit) FrameIrq = true; fcCycle = 0; break;
-                }
+                if (fcCycle == fs[3]) { if (!irqInhibit) FrameIrq = true; }
+                else if (fcCycle == fs[4]) { QuarterFrame(); HalfFrame(); if (!irqInhibit) FrameIrq = true; }
+                else if (fcCycle == fs[5]) { if (!irqInhibit) FrameIrq = true; fcCycle = 0; }
             }
             else
             {
-                switch (fcCycle)
-                {
-                    case 7457: QuarterFrame(); break;
-                    case 14913: QuarterFrame(); HalfFrame(); break;
-                    case 22371: QuarterFrame(); break;
-                    case 37281: QuarterFrame(); HalfFrame(); break;
-                    case 37282: fcCycle = 0; break;
-                }
+                if (fcCycle == fs[6]) { QuarterFrame(); HalfFrame(); }
+                else if (fcCycle == fs[7]) fcCycle = 0;
             }
 
             if (evenCycle) { p1.ClockTimer(); p2.ClockTimer(); }
