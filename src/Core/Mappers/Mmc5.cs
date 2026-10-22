@@ -2,7 +2,10 @@ using System;
 
 namespace AnyNes.Core
 {
-    /// <summary>Nintendo MMC5 (ExROM). Covers PRG/CHR banking, ExRAM, extended attributes, fill mode, IRQ and multiplier.</summary>
+    /// <summary>
+    /// Nintendo MMC5 (ExROM). Covers PRG/CHR banking, ExRAM, extended attributes, fill mode, IRQ,
+    /// multiplier and expansion audio (two pulse channels plus raw PCM).
+    /// </summary>
     [Serializable]
     sealed class Mmc5 : Mapper
     {
@@ -18,6 +21,11 @@ namespace AnyNes.Core
         bool tallSprites;
         int lastExByte;
 
+        // Expansion audio. Envelopes and length counters run off a fixed 240 Hz sequencer.
+        readonly Apu.Pulse pulse1 = new Apu.Pulse(false, false), pulse2 = new Apu.Pulse(true, false);
+        int pcm, audioFrame;
+        bool audioOdd;
+
         readonly byte[][] cpuMem = new byte[5][];
         readonly int[] cpuOff = new int[5];
         readonly bool[] cpuIsRam = new bool[5];
@@ -28,7 +36,40 @@ namespace AnyNes.Core
         {
             WantsScanline = true;
             SnoopPpuRegs = true;
+            NeedsCpuClock = true;
+            HasAudio = true;
             UpdatePrg();
+        }
+
+        void WriteAudio(int a, byte v)
+        {
+            switch (a)
+            {
+                case 0x5000: case 0x5002: case 0x5003: pulse1.Write(a & 3, v); break;
+                case 0x5004: case 0x5006: case 0x5007: pulse2.Write(a & 3, v); break;
+                case 0x5011: if (v != 0) pcm = v; break;    // PCM write mode; 0 is ignored
+                case 0x5015:
+                    pulse1.Enabled = (v & 1) != 0; if (!pulse1.Enabled) pulse1.Length = 0;
+                    pulse2.Enabled = (v & 2) != 0; if (!pulse2.Enabled) pulse2.Length = 0;
+                    break;
+            }
+        }
+
+        public override void CpuClock()
+        {
+            if (++audioFrame >= 7457)
+            {
+                audioFrame = 0;
+                pulse1.Env.Clock(); pulse2.Env.Clock();
+                pulse1.ClockHalf(); pulse2.ClockHalf();
+            }
+            audioOdd = !audioOdd;
+            if (audioOdd) { pulse1.ClockTimer(); pulse2.ClockTimer(); }
+        }
+
+        public override float AudioOutput()
+        {
+            return Apu.PulseMix[pulse1.Output + pulse2.Output] + pcm * (0.4f / 255f);
         }
 
         public override void Reset()
@@ -115,6 +156,7 @@ namespace AnyNes.Core
                         UpdateIrq();
                         return (byte)r;
                     }
+                case 0x5015: return (byte)((pulse1.Length > 0 ? 1 : 0) | (pulse2.Length > 0 ? 2 : 0));
                 case 0x5205: return (byte)(mulA * mulB);
                 case 0x5206: return (byte)((mulA * mulB) >> 8);
             }
@@ -134,6 +176,7 @@ namespace AnyNes.Core
                 if (exMode != 3) exram[a - 0x5C00] = v;
                 return;
             }
+            if (a >= 0x5000 && a <= 0x5015) { WriteAudio(a, v); return; }
             if (a >= 0x5113 && a <= 0x5117) { prgRegs[a - 0x5113] = v; UpdatePrg(); return; }
             if (a >= 0x5120 && a <= 0x5127) { chrA[a - 0x5120] = v | (chrUpper << 8); lastWasA = true; return; }
             if (a >= 0x5128 && a <= 0x512B) { chrB[a - 0x5128] = v | (chrUpper << 8); lastWasA = false; return; }

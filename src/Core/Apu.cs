@@ -27,7 +27,7 @@ namespace AnyNes.Core
         };
         static readonly int[] NoisePeriods = { 4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068 };
         static readonly int[] DmcRates = { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 };
-        static readonly float[] PulseMix = BuildPulseMix();
+        internal static readonly float[] PulseMix = BuildPulseMix();
         static readonly float[] TndMix = BuildTndMix();
 
         static float[] BuildPulseMix()
@@ -47,7 +47,7 @@ namespace AnyNes.Core
         // ------------------------------------------------------------ channels
 
         [Serializable]
-        sealed class Envelope
+        internal sealed class Envelope
         {
             public bool Start, Loop, Constant;
             public int Volume, Divider, Decay;
@@ -64,17 +64,24 @@ namespace AnyNes.Core
             public int Output { get { return Constant ? Volume : Decay; } }
         }
 
+        /// <summary>2A03 pulse channel; also used for the MMC5's pulses (no sweep unit).</summary>
         [Serializable]
-        sealed class Pulse
+        internal sealed class Pulse
         {
             public readonly Envelope Env = new Envelope();
-            public readonly bool Second;
+            public readonly bool Second, HasSweep;
             public bool Enabled;
             public int Duty, Step, Timer, Period, Length;
             public bool SweepEnabled, SweepNegate, SweepReload;
             public int SweepPeriod, SweepShift, SweepDivider;
 
-            public Pulse(bool second) { Second = second; }
+            public Pulse(bool second) : this(second, true) { }
+
+            public Pulse(bool second, bool hasSweep)
+            {
+                Second = second;
+                HasSweep = hasSweep;
+            }
 
             public void Write(int reg, int v)
             {
@@ -116,11 +123,12 @@ namespace AnyNes.Core
                 return Period - change - (Second ? 0 : 1);
             }
 
-            bool Muted { get { return Period < 8 || (!SweepNegate && Target() > 0x7FF); } }
+            bool Muted { get { return HasSweep && (Period < 8 || (!SweepNegate && Target() > 0x7FF)); } }
 
             public void ClockHalf()
             {
                 if (!Env.Loop && Length > 0) Length--;
+                if (!HasSweep) return;
                 if (SweepDivider == 0 && SweepEnabled && SweepShift > 0 && !Muted)
                 {
                     int tg = Target();

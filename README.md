@@ -30,7 +30,8 @@ The generated exe is a copy of the player runtime (`src/Player`) with three Win3
 into it: the ROM package (`RCDATA "ANYNESGAME"`), an icon rendered from a title-screen capture, and
 version info carrying the game title. At startup the player reads the package back out of its own
 resources and runs it on the emulator core (`src/Core`): a cycle-stepped 6502, a dot-based PPU,
-the APU (with Sunsoft 5B audio), and 30 mappers covering every board in a typical complete USA set.
+the APU plus expansion audio (MMC5 pulses + PCM, Namco 163 wavetable, Sunsoft 5B), and 30 mappers
+covering every board in a typical complete USA set.
 
 Player controls: arrows, Z = B, X = A, Right Shift = Select, Enter = Start (rebindable under
 Options > Controls; XInput pads work automatically). F5/F8 save/load state, 1-4 pick a slot,
@@ -42,4 +43,4 @@ games (Duck Hunt, Hogan's Alley, Wild Gunman, Gumshoe, ...) turn it on automatic
 (Operation Wolf, Bayou Billy, Laser Invasion, ...) tick "Port 2: Zapper" in the builder, or use
 Options > Zapper in the game window.
 
-Not emulated: MMC5/Namco 163 expansion audio, PAL timing.
+Not emulated: PAL timing, MMC5 PCM read mode / IRQ, Sunsoft 5B noise and envelopes.

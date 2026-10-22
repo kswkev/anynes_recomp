@@ -2,7 +2,7 @@ using System;
 
 namespace AnyNes.Core
 {
-    /// <summary>Namco 163 (banking, CIRAM/CHR nametables, cycle IRQ, internal RAM; no wavetable audio).</summary>
+    /// <summary>Namco 163 (banking, CIRAM/CHR nametables, cycle IRQ, internal RAM, wavetable audio).</summary>
     [Serializable]
     sealed class Namco163 : Mapper
     {
@@ -12,11 +12,51 @@ namespace AnyNes.Core
         int chipAddr, irqCounter;
         bool autoInc, ciramLo = true, ciramHi = true;
 
+        // Wavetable audio: channel registers live in chip RAM $40-$7F (channel 7 at $78), waveforms
+        // are 4-bit samples anywhere in the RAM. One channel is updated every 15 CPU cycles.
+        readonly int[] channelOut = new int[8];
+        int audioTick, audioChannel = 7;
+        bool soundDisabled;
+
         protected override void Init()
         {
             NeedsCpuClock = true;
+            HasAudio = true;
             SetPrg8(3, -1);
             UpdateChr();
+        }
+
+        int ActiveChannels { get { return ((chipRam[0x7F] >> 4) & 7) + 1; } }
+
+        void UpdateAudioChannel()
+        {
+            int count = ActiveChannels;
+            if (audioChannel < 8 - count) audioChannel = 7;
+            int ch = audioChannel;
+            int b = 0x40 + ch * 8;
+
+            int freq = chipRam[b] | (chipRam[b + 2] << 8) | ((chipRam[b + 4] & 3) << 16);
+            int phase = chipRam[b + 1] | (chipRam[b + 3] << 8) | (chipRam[b + 5] << 16);
+            int length = 256 - (chipRam[b + 4] & 0xFC);
+            phase = (phase + freq) % (length << 16);
+            chipRam[b + 1] = (byte)phase;
+            chipRam[b + 3] = (byte)(phase >> 8);
+            chipRam[b + 5] = (byte)(phase >> 16);
+
+            int idx = ((phase >> 16) + chipRam[b + 6]) & 0xFF;
+            int sample = (chipRam[idx >> 1] >> ((idx & 1) * 4)) & 0x0F;
+            channelOut[ch] = (sample - 8) * (chipRam[b + 7] & 0x0F);
+
+            audioChannel = ch - 1 < 8 - count ? 7 : ch - 1;
+        }
+
+        public override float AudioOutput()
+        {
+            if (soundDisabled) return 0;
+            // The chip time-multiplexes its channels, so the audible level is their average.
+            int count = ActiveChannels, sum = 0;
+            for (int ch = 8 - count; ch < 8; ch++) sum += channelOut[ch];
+            return sum * (0.3f / 120f) / count;
         }
 
         public override byte ReadCpu(int a)
@@ -44,7 +84,7 @@ namespace AnyNes.Core
             else if (a < 0x6000) { irqCounter = (irqCounter & 0x00FF) | (v << 8); Irq = false; }
             else if (a < 0xC000) { chrReg[(a - 0x8000) >> 11] = v; UpdateChr(); }
             else if (a < 0xE000) { ntReg[(a - 0xC000) >> 11] = v; UpdateChr(); }
-            else if (a < 0xE800) SetPrg8(0, v & 0x3F);
+            else if (a < 0xE800) { SetPrg8(0, v & 0x3F); soundDisabled = (v & 0x40) != 0; }
             else if (a < 0xF000)
             {
                 SetPrg8(1, v & 0x3F);
@@ -84,6 +124,8 @@ namespace AnyNes.Core
 
         public override void CpuClock()
         {
+            if (++audioTick >= 15) { audioTick = 0; UpdateAudioChannel(); }
+
             if ((irqCounter & 0x8000) == 0 || (irqCounter & 0x7FFF) == 0x7FFF) return;
             irqCounter++;
             if ((irqCounter & 0x7FFF) == 0x7FFF) Irq = true;
